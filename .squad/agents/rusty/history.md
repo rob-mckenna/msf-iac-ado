@@ -8,6 +8,12 @@
 
 ## Learnings
 
+### 2026-05-27T07:18:33.309-04:00: Production hardening pass for landing zone and workload compositions
+
+- Hardened the hub-spoke networking stack with explicit hub subnets, Azure Firewall egress routing, spoke NSGs, route tables, and delegation support.
+- Split landing-zone wiring cleanly across networking, DNS, Key Vault, policy, and workload compositions while avoiding shared tfvars name collisions by using composition-specific variables for workload resource groups and Fabric workspace names.
+- Validation passed for networking, DNS, Key Vault, AI Foundry, and Fabric modules plus the AI Foundry and Fabric compositions; landing-zone validation is still blocked by pre-existing syntax errors in `terraform/modules/observability/`.
+
 ### 2026-05-27: Danny (Lead Architect) completed platform architecture
 
 Danny designed and created the complete Azure AI Platform reference architecture including:
@@ -29,3 +35,7 @@ Danny designed and created the complete Azure AI Platform reference architecture
 - Environment promotion: sandbox → poc → prod (manual with plan review gates)
 - Hub-spoke network topology with Firewall + DNS Private Resolver
 - All decisions in `.squad/decisions.md`
+
+### 2026-05-27T13:11:30Z: Decision accepted — Composition-specific variable names
+
+Your proposed decision on composition-specific variable names (e.g., `ai_foundry_resource_group_name`) has been accepted and merged into the team decisions.md. This formalizes the shared tfvars naming convention to prevent collisions between landing-zone, AI Foundry, and Fabric deployments.

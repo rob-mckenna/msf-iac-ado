@@ -1,0 +1,201 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\templates\**
+    - pipelines\infra\fabric-workspace.yml
+    - terraform\compositions\fabric-workspace\**
+    - terraform\environments\**
+    - terraform\modules\**
+
+pr:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\templates\**
+    - pipelines\infra\fabric-workspace.yml
+    - terraform\compositions\fabric-workspace\**
+    - terraform\environments\**
+    - terraform\modules\**
+
+variables:
+- group: vg-fabric-common
+- group: vg-fabric-sandbox
+- group: vg-fabric-poc
+- group: vg-fabric-prod
+- group: vg-tf-backend-sandbox
+- group: vg-tf-backend-poc
+- group: vg-tf-backend-prod
+- name: workingDirectory
+  value: terraform\compositions\fabric-workspace
+
+stages:
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_sandbox
+    displayName: Validate (sandbox)
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: fabric-workspace.sandbox.tfstate
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_sandbox
+    displayName: Plan (sandbox)
+    dependsOn:
+    - validate_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    planArtifactName: tfplan-fabric-sandbox
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: fabric-workspace.sandbox.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_sandbox
+    displayName: Apply (sandbox)
+    dependsOn:
+    - plan_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    planArtifactName: tfplan-fabric-sandbox
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: fabric-workspace.sandbox.tfstate
+    smokeTestScript: |
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      if (-not $resourceGroupName) {
+        throw 'resource_group_name was not found in the tfvars file.'
+      }
+      az group show --name $resourceGroupName --output table | Out-Host
+      'Fabric sandbox smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'fabric-smoke.txt') -Encoding utf8
+
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_poc
+    displayName: Validate (poc)
+    dependsOn:
+    - apply_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: fabric-workspace.poc.tfstate
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_poc
+    displayName: Plan (poc)
+    dependsOn:
+    - validate_poc
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    planArtifactName: tfplan-fabric-poc
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: fabric-workspace.poc.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_poc
+    displayName: Apply (poc)
+    dependsOn:
+    - plan_poc
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    planArtifactName: tfplan-fabric-poc
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: fabric-workspace.poc.tfstate
+    requireManualApproval: true
+    approvalNotifyUsers: $(FABRIC_APPROVAL_NOTIFY_USERS_POC)
+    approvalInstructions: Review the Fabric poc plan and cost summary before approving promotion.
+    smokeTestScript: |
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      if (-not $resourceGroupName) {
+        throw 'resource_group_name was not found in the tfvars file.'
+      }
+      az group show --name $resourceGroupName --output table | Out-Host
+      'Fabric PoC smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'fabric-smoke.txt') -Encoding utf8
+
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_prod
+    displayName: Validate (prod)
+    dependsOn:
+    - apply_poc
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: fabric-workspace.prod.tfstate
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_prod
+    displayName: Plan (prod)
+    dependsOn:
+    - validate_prod
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    planArtifactName: tfplan-fabric-prod
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: fabric-workspace.prod.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_prod
+    displayName: Apply (prod)
+    dependsOn:
+    - plan_prod
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(FABRIC_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    planArtifactName: tfplan-fabric-prod
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: fabric-workspace.prod.tfstate
+    requireManualApproval: true
+    approvalNotifyUsers: $(FABRIC_APPROVAL_NOTIFY_USERS_PROD)
+    approvalInstructions: Review the Fabric production plan and rollback guidance before approving promotion.
+    smokeTestScript: |
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      if (-not $resourceGroupName) {
+        throw 'resource_group_name was not found in the tfvars file.'
+      }
+      az group show --name $resourceGroupName --output table | Out-Host
+      'Fabric production smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'fabric-smoke.txt') -Encoding utf8

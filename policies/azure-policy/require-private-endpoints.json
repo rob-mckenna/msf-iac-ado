@@ -1,0 +1,106 @@
+{
+  "properties": {
+    "displayName": "Require private endpoints for AI platform services",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Requires private endpoint connections for storage, Key Vault, Container Registry, Azure AI, and AI Foundry workspaces.",
+    "metadata": {
+      "category": "Network",
+      "version": "1.1.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Policy effect"
+        },
+        "allowedValues": [
+          "Deny",
+          "Audit",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.Storage/storageAccounts"
+              },
+              {
+                "count": {
+                  "field": "Microsoft.Storage/storageAccounts/privateEndpointConnections[*]"
+                },
+                "equals": 0
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.KeyVault/vaults"
+              },
+              {
+                "count": {
+                  "field": "Microsoft.KeyVault/vaults/privateEndpointConnections[*]"
+                },
+                "equals": 0
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.ContainerRegistry/registries"
+              },
+              {
+                "count": {
+                  "field": "Microsoft.ContainerRegistry/registries/privateEndpointConnections[*]"
+                },
+                "equals": 0
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.CognitiveServices/accounts"
+              },
+              {
+                "count": {
+                  "field": "Microsoft.CognitiveServices/accounts/privateEndpointConnections[*]"
+                },
+                "equals": 0
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.MachineLearningServices/workspaces"
+              },
+              {
+                "count": {
+                  "field": "Microsoft.MachineLearningServices/workspaces/privateEndpointConnections[*]"
+                },
+                "equals": 0
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

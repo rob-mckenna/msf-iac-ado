@@ -1,0 +1,60 @@
+{
+  "properties": {
+    "displayName": "Deny public ingress on AI services",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Blocks Azure AI Foundry and Cognitive Services resources when public ingress is exposed. For PaaS AI services this is the public IP equivalent control surface.",
+    "metadata": {
+      "category": "Network",
+      "version": "1.0.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Policy effect"
+        },
+        "allowedValues": [
+          "Deny",
+          "Audit",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.CognitiveServices/accounts"
+              },
+              {
+                "field": "Microsoft.CognitiveServices/accounts/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.MachineLearningServices/workspaces"
+              },
+              {
+                "field": "Microsoft.MachineLearningServices/workspaces/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

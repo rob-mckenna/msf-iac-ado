@@ -1,0 +1,205 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\templates\**
+    - pipelines\infra\landing-zone.yml
+    - terraform\compositions\landing-zone\**
+    - terraform\environments\**
+    - terraform\modules\**
+    - policies\azure-policy\**
+    - scripts\**
+
+pr:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\templates\**
+    - pipelines\infra\landing-zone.yml
+    - terraform\compositions\landing-zone\**
+    - terraform\environments\**
+    - terraform\modules\**
+    - policies\azure-policy\**
+    - scripts\**
+
+variables:
+- group: vg-landing-zone-common
+- group: vg-landing-zone-sandbox
+- group: vg-landing-zone-poc
+- group: vg-landing-zone-prod
+- group: vg-tf-backend-sandbox
+- group: vg-tf-backend-poc
+- group: vg-tf-backend-prod
+- name: workingDirectory
+  value: terraform\compositions\landing-zone
+
+stages:
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_sandbox
+    displayName: Validate (sandbox)
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: landing-zone.sandbox.tfstate
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_sandbox
+    displayName: Plan (sandbox)
+    dependsOn:
+    - validate_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    planArtifactName: tfplan-landing-zone-sandbox
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: landing-zone.sandbox.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_sandbox
+    displayName: Apply (sandbox)
+    dependsOn:
+    - plan_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    planArtifactName: tfplan-landing-zone-sandbox
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: landing-zone.sandbox.tfstate
+    smokeTestScript: |
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      if (-not $resourceGroupName) {
+        throw 'resource_group_name was not found in the tfvars file.'
+      }
+      az group show --name $resourceGroupName --output table | Out-Host
+      'Landing zone smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'landing-zone-smoke.txt') -Encoding utf8
+
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_poc
+    displayName: Validate (poc)
+    dependsOn:
+    - apply_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: landing-zone.poc.tfstate
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_poc
+    displayName: Plan (poc)
+    dependsOn:
+    - validate_poc
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    planArtifactName: tfplan-landing-zone-poc
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: landing-zone.poc.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_poc
+    displayName: Apply (poc)
+    dependsOn:
+    - plan_poc
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    planArtifactName: tfplan-landing-zone-poc
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: landing-zone.poc.tfstate
+    requireManualApproval: true
+    approvalNotifyUsers: $(LANDING_ZONE_APPROVAL_NOTIFY_USERS_POC)
+    approvalInstructions: Review the landing-zone poc plan, PR comment, and cost summary before approving promotion.
+    smokeTestScript: |
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      if (-not $resourceGroupName) {
+        throw 'resource_group_name was not found in the tfvars file.'
+      }
+      az group show --name $resourceGroupName --output table | Out-Host
+      'Landing zone PoC smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'landing-zone-smoke.txt') -Encoding utf8
+
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_prod
+    displayName: Validate (prod)
+    dependsOn:
+    - apply_poc
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: landing-zone.prod.tfstate
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_prod
+    displayName: Plan (prod)
+    dependsOn:
+    - validate_prod
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    planArtifactName: tfplan-landing-zone-prod
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: landing-zone.prod.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_prod
+    displayName: Apply (prod)
+    dependsOn:
+    - plan_prod
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(LANDING_ZONE_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    planArtifactName: tfplan-landing-zone-prod
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: landing-zone.prod.tfstate
+    requireManualApproval: true
+    approvalNotifyUsers: $(LANDING_ZONE_APPROVAL_NOTIFY_USERS_PROD)
+    approvalInstructions: Review the landing-zone production plan, change record, and rollback guidance before approving promotion.
+    smokeTestScript: |
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      if (-not $resourceGroupName) {
+        throw 'resource_group_name was not found in the tfvars file.'
+      }
+      az group show --name $resourceGroupName --output table | Out-Host
+      'Landing zone production smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'landing-zone-smoke.txt') -Encoding utf8

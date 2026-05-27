@@ -1,0 +1,37 @@
+﻿<policies>
+  <inbound>
+    <base />
+    <set-variable name="correlation-id" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-correlation-id&quot;, Guid.NewGuid().ToString()))" />
+    <set-header name="x-correlation-id" exists-action="override"><value>@((string)context.Variables[&quot;correlation-id&quot;])</value></set-header>
+    <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized"><openid-config url="https://login.microsoftonline.com/{{entraTenantId}}/v2.0/.well-known/openid-configuration" /><audiences><audience>{{platformAppAudience}}</audience></audiences></validate-jwt>
+    <cache-lookup-value key="mcp-tool-catalog" variable-name="cached-tool-catalog" />
+    <choose><when condition="@(context.Request.Method == &quot;GET&quot; &amp;&amp; context.Request.OriginalUrl.Path.EndsWith(&quot;/tools&quot;) &amp;&amp; context.Variables.ContainsKey(&quot;cached-tool-catalog&quot;))"><return-response><set-status code="200" reason="OK" /><set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header><set-body>@((string)context.Variables[&quot;cached-tool-catalog&quot;])</set-body></return-response></when></choose>
+    <set-variable name="mcp-route-catalog" value="{{mcp-tool-route-catalog}}" />
+    <set-variable name="mcp-tool-name" value="@{ var segments = context.Request.OriginalUrl.Path.Trim('/').Split('/'); return segments.Length &gt;= 3 &amp;&amp; string.Equals(segments[1], &quot;tools&quot;, StringComparison.OrdinalIgnoreCase) ? segments[2] : string.Empty; }" />
+    <choose>
+      <when condition="@(context.Request.Method == &quot;POST&quot; &amp;&amp; context.Request.OriginalUrl.Path.Contains(&quot;/tools/&quot;))">
+        <set-variable name="selected-tool" value="@{ var toolName = (string)context.Variables.GetValueOrDefault(&quot;mcp-tool-name&quot;, string.Empty); var catalog = JArray.Parse((string)context.Variables[&quot;mcp-route-catalog&quot;]); var selected = catalog.Children&lt;JObject&gt;().FirstOrDefault(entry =&gt; string.Equals((string)entry[&quot;name&quot;], toolName, StringComparison.OrdinalIgnoreCase)); return selected == null ? string.Empty : selected.ToString(); }" />
+        <choose>
+          <when condition="@(string.IsNullOrEmpty((string)context.Variables.GetValueOrDefault(&quot;selected-tool&quot;, string.Empty)))">
+            <return-response><set-status code="404" reason="ToolNotFound" /><set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header><set-body>@{ return new JObject(new JProperty(&quot;error&quot;, new JObject(new JProperty(&quot;code&quot;, &quot;ToolNotFound&quot;), new JProperty(&quot;message&quot;, &quot;The requested MCP tool is not registered in APIM.&quot;), new JProperty(&quot;tool&quot;, (string)context.Variables.GetValueOrDefault(&quot;mcp-tool-name&quot;, string.Empty))))).ToString(); }</set-body></return-response>
+          </when>
+        </choose>
+        <set-variable name="selected-tool-backend-url" value="@((string)JObject.Parse((string)context.Variables[&quot;selected-tool&quot;])[&quot;backendUrl&quot;])" />
+        <set-backend-service base-url="@((string)context.Variables[&quot;selected-tool-backend-url&quot;])" />
+      </when>
+      <when condition="@(context.Request.Method == &quot;GET&quot; &amp;&amp; context.Request.OriginalUrl.Path.EndsWith(&quot;/sse&quot;))">
+        <set-header name="Accept" exists-action="override"><value>text/event-stream</value></set-header>
+        <set-backend-service base-url="@{ var catalog = JArray.Parse((string)context.Variables[&quot;mcp-route-catalog&quot;]); var selected = catalog.Children&lt;JObject&gt;().FirstOrDefault(); return selected == null ? string.Empty : (string)selected[&quot;backendUrl&quot;]; }" />
+      </when>
+    </choose>
+    <log-to-application-insights logger-id="appinsights">@{ return new { eventType = &quot;mcp-request&quot;, path = context.Request.OriginalUrl.Path, tool = (string)context.Variables.GetValueOrDefault(&quot;mcp-tool-name&quot;, string.Empty), correlationId = (string)context.Variables.GetValueOrDefault(&quot;correlation-id&quot;, context.RequestId.ToString()) }; }</log-to-application-insights>
+  </inbound>
+  <backend><choose><when condition="@(context.Request.Method == &quot;GET&quot; &amp;&amp; context.Request.OriginalUrl.Path.EndsWith(&quot;/sse&quot;))"><forward-request timeout="300" buffer-request-body="false" buffer-response="false" fail-on-error-status-code="false" /></when><otherwise><forward-request timeout="60" buffer-request-body="true" fail-on-error-status-code="false" /></otherwise></choose></backend>
+  <outbound>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override"><value>@((string)context.Variables[&quot;correlation-id&quot;])</value></set-header>
+    <choose><when condition="@(context.Request.Method == &quot;GET&quot; &amp;&amp; context.Request.OriginalUrl.Path.EndsWith(&quot;/tools&quot;))"><cache-store-value key="mcp-tool-catalog" duration="{{mcp-tool-discovery-cache-ttl-seconds}}" value="@(context.Response.Body.As&lt;string&gt;(preserveContent: true))" /></when></choose>
+    <log-to-application-insights logger-id="appinsights">@{ return new { eventType = &quot;mcp-response&quot;, path = context.Request.OriginalUrl.Path, statusCode = context.Response.StatusCode, tool = (string)context.Variables.GetValueOrDefault(&quot;mcp-tool-name&quot;, string.Empty) }; }</log-to-application-insights>
+  </outbound>
+  <on-error><base /><return-response><set-status code="500" reason="McpGatewayError" /><set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header><set-body>@{ return new JObject(new JProperty(&quot;error&quot;, new JObject(new JProperty(&quot;code&quot;, context.LastError != null ? context.LastError.Reason : &quot;McpGatewayError&quot;), new JProperty(&quot;message&quot;, context.LastError != null ? context.LastError.Message : &quot;The MCP gateway request failed.&quot;), new JProperty(&quot;correlationId&quot;, (string)context.Variables.GetValueOrDefault(&quot;correlation-id&quot;, context.RequestId.ToString()))))).ToString(); }</set-body></return-response></on-error>
+</policies>

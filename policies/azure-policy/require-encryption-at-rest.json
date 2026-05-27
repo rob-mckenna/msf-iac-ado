@@ -1,0 +1,44 @@
+{
+  "properties": {
+    "displayName": "Require encryption at rest on platform storage",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Requires infrastructure encryption on storage accounts that hold AI platform state and artifacts.",
+    "metadata": {
+      "category": "Data Protection",
+      "version": "1.0.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Policy effect"
+        },
+        "allowedValues": [
+          "Deny",
+          "Audit",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Storage/storageAccounts"
+          },
+          {
+            "field": "Microsoft.Storage/storageAccounts/encryption.requireInfrastructureEncryption",
+            "notEquals": "true"
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+parameters:
+- name: stageName
+  type: string
+  default: terraform_validate
+- name: displayName
+  type: string
+  default: Terraform validate
+- name: dependsOn
+  type: object
+  default: []
+- name: workingDirectory
+  type: string
+- name: environment
+  type: string
+- name: serviceConnection
+  type: string
+- name: varFile
+  type: string
+- name: backendResourceGroup
+  type: string
+- name: backendStorageAccount
+  type: string
+- name: backendContainer
+  type: string
+- name: backendKey
+  type: string
+- name: terraformVersion
+  type: string
+  default: 1.8.5
+- name: preValidateScript
+  type: string
+  default: ''
+
+stages:
+- stage: ${{ parameters.stageName }}
+  displayName: ${{ parameters.displayName }}
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: terraform_validate
+    displayName: Terraform validate (${{ parameters.environment }})
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+
+    - task: AzureCLI@2
+      displayName: Validate prerequisites
+      condition: ne('${{ parameters.preValidateScript }}', '')
+      inputs:
+        azureSubscription: ${{ parameters.serviceConnection }}
+        scriptType: pscore
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        workingDirectory: ${{ parameters.workingDirectory }}
+        inlineScript: |
+          $varFilePath = Join-Path $env:BUILD_SOURCESDIRECTORY '${{ parameters.varFile }}'
+          function Get-TfvarsValue {
+            param([string]$Name)
+            if (-not (Test-Path $varFilePath)) {
+              throw "Variable file not found: $varFilePath"
+            }
+
+            $match = Select-String -Path $varFilePath -Pattern "^\s*$Name\s*=\s*\"([^\"]+)\"" -AllMatches
+            if ($match -and $match.Matches.Count -gt 0) {
+              return $match.Matches[0].Groups[1].Value
+            }
+
+            return $null
+          }
+
+          Invoke-Expression @'
+          ${{ parameters.preValidateScript }}
+          '@
+
+    - template: terraform-init.yml
+      parameters:
+        workingDirectory: ${{ parameters.workingDirectory }}
+        backendServiceConnection: ${{ parameters.serviceConnection }}
+        backendResourceGroup: ${{ parameters.backendResourceGroup }}
+        backendStorageAccount: ${{ parameters.backendStorageAccount }}
+        backendContainer: ${{ parameters.backendContainer }}
+        backendKey: ${{ parameters.backendKey }}
+        terraformVersion: ${{ parameters.terraformVersion }}
+
+    - task: AzureCLI@2
+      displayName: Terraform validate
+      inputs:
+        azureSubscription: ${{ parameters.serviceConnection }}
+        scriptType: pscore
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        workingDirectory: ${{ parameters.workingDirectory }}
+        inlineScript: |
+          terraform validate -no-color

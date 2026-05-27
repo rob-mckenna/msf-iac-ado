@@ -1,0 +1,181 @@
+parameters:
+- name: stageName
+  type: string
+  default: terraform_destroy
+- name: displayName
+  type: string
+  default: Terraform destroy
+- name: dependsOn
+  type: object
+  default: []
+- name: workingDirectory
+  type: string
+- name: environment
+  type: string
+- name: serviceConnection
+  type: string
+- name: varFile
+  type: string
+- name: backendResourceGroup
+  type: string
+- name: backendStorageAccount
+  type: string
+- name: backendContainer
+  type: string
+- name: backendKey
+  type: string
+- name: terraformVersion
+  type: string
+  default: 1.8.5
+- name: approvalNotifyUsers
+  type: string
+  default: platform-approvers@contoso.com
+- name: approvalInstructions
+  type: string
+  default: Review the destroy inventory and confirm the environment can be destroyed.
+
+stages:
+- stage: ${{ parameters.stageName }}
+  displayName: ${{ parameters.displayName }}
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: resource_inventory
+    displayName: Capture destroy inventory
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+
+    - template: terraform-init.yml
+      parameters:
+        workingDirectory: ${{ parameters.workingDirectory }}
+        backendServiceConnection: ${{ parameters.serviceConnection }}
+        backendResourceGroup: ${{ parameters.backendResourceGroup }}
+        backendStorageAccount: ${{ parameters.backendStorageAccount }}
+        backendContainer: ${{ parameters.backendContainer }}
+        backendKey: ${{ parameters.backendKey }}
+        terraformVersion: ${{ parameters.terraformVersion }}
+
+    - task: AzureCLI@2
+      displayName: Build destroy inventory
+      inputs:
+        azureSubscription: ${{ parameters.serviceConnection }}
+        scriptType: pscore
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        workingDirectory: ${{ parameters.workingDirectory }}
+        inlineScript: |
+          $inventoryDir = Join-Path '$(Build.ArtifactStagingDirectory)' 'tfdestroy-${{ parameters.environment }}'
+          $varFilePath = Join-Path $env:BUILD_SOURCESDIRECTORY '${{ parameters.varFile }}'
+          New-Item -ItemType Directory -Path $inventoryDir -Force | Out-Null
+
+          function Get-TfvarsValue {
+            param([string]$Name)
+            $match = Select-String -Path $varFilePath -Pattern "^\s*$Name\s*=\s*\"([^\"]+)\"" -AllMatches
+            if ($match -and $match.Matches.Count -gt 0) {
+              return $match.Matches[0].Groups[1].Value
+            }
+
+            return $null
+          }
+
+          terraform state list | Set-Content -Path (Join-Path $inventoryDir 'terraform-state.txt') -Encoding utf8
+          $destroyPlanFile = Join-Path $inventoryDir 'destroy.tfplan'
+          terraform plan -destroy -input=false -lock=false -var-file='${{ parameters.varFile }}' -out=$destroyPlanFile -no-color
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          terraform show -no-color $destroyPlanFile | Set-Content -Path (Join-Path $inventoryDir 'destroy-plan.txt') -Encoding utf8
+
+          $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+          if ($resourceGroupName) {
+            az resource list --resource-group $resourceGroupName --output table | Set-Content -Path (Join-Path $inventoryDir 'azure-resources.txt') -Encoding utf8
+          }
+          else {
+            'No resource_group_name was found in the tfvars file.' | Set-Content -Path (Join-Path $inventoryDir 'azure-resources.txt') -Encoding utf8
+          }
+
+          $blobServiceProperties = az storage account blob-service-properties show --account-name '${{ parameters.backendStorageAccount }}' --auth-mode login --output json | ConvertFrom-Json
+          if (-not $blobServiceProperties.deleteRetentionPolicy.enabled) {
+            throw 'Blob soft-delete must be enabled on the Terraform backend before destroy can proceed.'
+          }
+
+          if (-not $blobServiceProperties.isVersioningEnabled) {
+            throw 'Blob versioning must be enabled on the Terraform backend before destroy can proceed.'
+          }
+
+          @(
+            "Soft delete enabled: $($blobServiceProperties.deleteRetentionPolicy.enabled)"
+            "Versioning enabled: $($blobServiceProperties.isVersioningEnabled)"
+          ) | Set-Content -Path (Join-Path $inventoryDir 'soft-delete-check.txt') -Encoding utf8
+
+    - publish: $(Build.ArtifactStagingDirectory)\tfdestroy-${{ parameters.environment }}
+      displayName: Publish destroy inventory
+      artifact: tfdestroy-${{ parameters.environment }}
+
+  - job: destroy_confirmation
+    displayName: Confirm destroy
+    dependsOn:
+    - resource_inventory
+    pool: server
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        notifyUsers: |
+          ${{ parameters.approvalNotifyUsers }}
+        instructions: ${{ parameters.approvalInstructions }}
+        onTimeout: reject
+
+  - job: prod_destroy_confirmation
+    displayName: Production destroy confirmation
+    dependsOn:
+    - destroy_confirmation
+    condition: eq('${{ parameters.environment }}', 'prod')
+    pool: server
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        notifyUsers: |
+          ${{ parameters.approvalNotifyUsers }}
+        instructions: Confirm a second time that production destroy is intentional and fully approved.
+        onTimeout: reject
+
+  - deployment: terraform_destroy
+    displayName: Terraform destroy (${{ parameters.environment }})
+    dependsOn:
+    - resource_inventory
+    - destroy_confirmation
+    - prod_destroy_confirmation
+    condition: and(succeeded(), in(dependencies.destroy_confirmation.result, 'Succeeded', 'Skipped'), in(dependencies.prod_destroy_confirmation.result, 'Succeeded', 'Skipped'))
+    environment: infra-${{ parameters.environment }}
+    pool:
+      vmImage: windows-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - template: terraform-init.yml
+            parameters:
+              workingDirectory: ${{ parameters.workingDirectory }}
+              backendServiceConnection: ${{ parameters.serviceConnection }}
+              backendResourceGroup: ${{ parameters.backendResourceGroup }}
+              backendStorageAccount: ${{ parameters.backendStorageAccount }}
+              backendContainer: ${{ parameters.backendContainer }}
+              backendKey: ${{ parameters.backendKey }}
+              terraformVersion: ${{ parameters.terraformVersion }}
+
+          - task: AzureCLI@2
+            displayName: Terraform destroy
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: ${{ parameters.workingDirectory }}
+              inlineScript: |
+                terraform destroy -input=false -auto-approve -var-file='${{ parameters.varFile }}'

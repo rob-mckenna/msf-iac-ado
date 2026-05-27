@@ -1,0 +1,42 @@
+﻿<policies>
+  <inbound>
+    <base />
+    <set-variable name="correlation-id" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-correlation-id&quot;, Guid.NewGuid().ToString()))" />
+    <set-header name="x-correlation-id" exists-action="override"><value>@((string)context.Variables[&quot;correlation-id&quot;])</value></set-header>
+    <cors allow-credentials="false">
+      <allowed-origins><origin>*</origin></allowed-origins>
+      <allowed-methods preflight-result-max-age="300"><method>GET</method><method>POST</method><method>OPTIONS</method></allowed-methods>
+      <allowed-headers><header>*</header></allowed-headers>
+      <expose-headers><header>x-correlation-id</header><header>x-prompt-tokens</header><header>x-completion-tokens</header><header>x-total-tokens</header></expose-headers>
+    </cors>
+    <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized">
+      <openid-config url="https://login.microsoftonline.com/{{entraTenantId}}/v2.0/.well-known/openid-configuration" />
+      <audiences><audience>{{platformAppAudience}}</audience></audiences>
+      <issuers><issuer>https://sts.windows.net/{{entraTenantId}}/</issuer><issuer>https://login.microsoftonline.com/{{entraTenantId}}/v2.0</issuer></issuers>
+    </validate-jwt>
+    <choose>
+      <when condition="@(context.Subscription != null &amp;&amp; !string.IsNullOrEmpty(context.Subscription.Name) &amp;&amp; context.Subscription.Name.ToLowerInvariant().Contains(&quot;premium&quot;))"><rate-limit-by-key calls="600" renewal-period="60" counter-key="@(context.Subscription.Id)" /></when>
+      <when condition="@(context.Subscription != null &amp;&amp; !string.IsNullOrEmpty(context.Subscription.Name) &amp;&amp; context.Subscription.Name.ToLowerInvariant().Contains(&quot;standard&quot;))"><rate-limit-by-key calls="240" renewal-period="60" counter-key="@(context.Subscription.Id)" /></when>
+      <otherwise><rate-limit-by-key calls="120" renewal-period="60" counter-key="@(context.Subscription != null ? context.Subscription.Id : context.Request.IpAddress)" /></otherwise>
+    </choose>
+    <log-to-application-insights logger-id="appinsights">@{ return new { eventType = "gateway-request", correlationId = (string)context.Variables["correlation-id"], method = context.Request.Method, path = context.Request.OriginalUrl.Path, api = context.Api != null ? context.Api.Name : string.Empty, product = context.Product != null ? context.Product.Name : string.Empty, subscriptionId = context.Subscription != null ? context.Subscription.Id : string.Empty, requestId = context.RequestId.ToString() }; }</log-to-application-insights>
+    <include-fragment fragment-id="content-safety-filter" />
+  </inbound>
+  <backend><base /></backend>
+  <outbound>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override"><value>@((string)context.Variables[&quot;correlation-id&quot;])</value></set-header>
+    <include-fragment fragment-id="content-safety-filter" />
+    <log-to-application-insights logger-id="appinsights">@{ return new { eventType = "gateway-response", correlationId = (string)context.Variables.GetValueOrDefault("correlation-id", context.RequestId.ToString()), statusCode = context.Response.StatusCode, reason = context.Response.StatusReason, backendUrl = context.Variables.GetValueOrDefault("selected-backend-url", string.Empty), requestId = context.RequestId.ToString(), durationMs = context.Elapsed.TotalMilliseconds }; }</log-to-application-insights>
+  </outbound>
+  <on-error>
+    <base />
+    <set-header name="x-correlation-id" exists-action="override"><value>@((string)context.Variables.GetValueOrDefault(&quot;correlation-id&quot;, context.RequestId.ToString()))</value></set-header>
+    <log-to-application-insights logger-id="appinsights">@{ return new { eventType = "gateway-error", correlationId = (string)context.Variables.GetValueOrDefault("correlation-id", context.RequestId.ToString()), requestId = context.RequestId.ToString(), message = context.LastError != null ? context.LastError.Message : "Unknown error", reason = context.LastError != null ? context.LastError.Reason : "gateway_failure", section = context.LastError != null ? context.LastError.Section : string.Empty, path = context.Request.OriginalUrl.Path }; }</log-to-application-insights>
+    <return-response>
+      <set-status code="@(context.Response != null &amp;&amp; context.Response.StatusCode &gt; 0 ? context.Response.StatusCode : 500)" reason="@(context.LastError != null ? context.LastError.Reason : &quot;GatewayError&quot;)" />
+      <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+      <set-body>@{ return new JObject(new JProperty("error", new JObject(new JProperty("code", context.LastError != null ? context.LastError.Reason : "GatewayError"), new JProperty("message", context.LastError != null ? context.LastError.Message : "The gateway could not process the request."), new JProperty("correlationId", (string)context.Variables.GetValueOrDefault("correlation-id", context.RequestId.ToString())), new JProperty("requestId", context.RequestId.ToString()), new JProperty("backendUrl", (string)context.Variables.GetValueOrDefault("selected-backend-url", string.Empty))))).ToString(); }</set-body>
+    </return-response>
+  </on-error>
+</policies>

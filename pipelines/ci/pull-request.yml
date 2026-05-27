@@ -1,0 +1,172 @@
+trigger: none
+
+pr:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\**
+    - policies\**
+    - scripts\**
+    - terraform\**
+
+stages:
+- stage: terraform_quality
+  displayName: Terraform quality checks
+  jobs:
+  - job: fmt_check
+    displayName: Terraform fmt check
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: TerraformInstaller@1
+      displayName: Install Terraform 1.8.5
+      inputs:
+        terraformVersion: 1.8.5
+    - task: PowerShell@2
+      displayName: Run terraform fmt -check
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          terraform fmt -check -recursive terraform
+
+  - job: validate_compositions
+    displayName: Terraform validate
+    strategy:
+      matrix:
+        landing_zone:
+          compositionDirectory: terraform\compositions\landing-zone
+        ai_foundry:
+          compositionDirectory: terraform\compositions\ai-foundry-workspace
+        fabric:
+          compositionDirectory: terraform\compositions\fabric-workspace
+        apim:
+          compositionDirectory: terraform\compositions\apim-gateway
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: TerraformInstaller@1
+      displayName: Install Terraform 1.8.5
+      inputs:
+        terraformVersion: 1.8.5
+    - task: PowerShell@2
+      displayName: Initialize and validate composition
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          Set-Location '$(Build.SourcesDirectory)\$(compositionDirectory)'
+          terraform init -backend=false -input=false -lockfile=readonly -no-color
+          terraform validate -no-color
+
+- stage: security_and_policy
+  displayName: Security and policy checks
+  dependsOn: terraform_quality
+  jobs:
+  - job: checkov_scan
+    displayName: Checkov scan
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.x
+      inputs:
+        versionSpec: '3.x'
+    - task: PowerShell@2
+      displayName: Install and run Checkov
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          python -m pip install --upgrade pip
+          python -m pip install checkov
+          checkov --directory terraform --quiet --compact --framework terraform
+
+  - job: policy_compliance
+    displayName: Policy compliance checks
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: PowerShell@2
+      displayName: Validate policy assets
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          $requiredPolicies = @(
+            'policies\azure-policy\deny-public-access.json',
+            'policies\azure-policy\enforce-tagging.json',
+            'policies\azure-policy\require-private-endpoints.json'
+          )
+
+          foreach ($relativePath in $requiredPolicies) {
+            $fullPath = Join-Path '$(Build.SourcesDirectory)' $relativePath
+            if (-not (Test-Path $fullPath)) {
+              throw "Required policy file missing: $relativePath"
+            }
+            Get-Content $fullPath -Raw | ConvertFrom-Json | Out-Null
+          }
+
+          $landingZoneMain = Get-Content '$(Build.SourcesDirectory)\terraform\compositions\landing-zone\main.tf' -Raw
+          if ($landingZoneMain -notmatch 'module\s+"policy"') {
+            throw 'Landing-zone composition must include the policy module.'
+          }
+
+- stage: docs_check
+  displayName: Documentation generation checks
+  dependsOn: security_and_policy
+  jobs:
+  - job: docs_generation
+    displayName: Terraform docs generation check
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: PowerShell@2
+      displayName: Install terraform-docs and verify readmes
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          $toolDir = Join-Path '$(Agent.TempDirectory)' 'terraform-docs'
+          $zipPath = Join-Path $toolDir 'terraform-docs.zip'
+          $exePath = Join-Path $toolDir 'terraform-docs.exe'
+          New-Item -ItemType Directory -Path $toolDir -Force | Out-Null
+          if (-not (Test-Path $exePath)) {
+            Invoke-WebRequest -Uri 'https://github.com/terraform-docs/terraform-docs/releases/download/v0.18.0/terraform-docs-v0.18.0-windows-amd64.zip' -OutFile $zipPath
+            Expand-Archive -Path $zipPath -DestinationPath $toolDir -Force
+          }
+
+          $docTargets = @(
+            'terraform\modules\ai-foundry',
+            'terraform\modules\apim',
+            'terraform\modules\dns',
+            'terraform\modules\entra',
+            'terraform\modules\fabric',
+            'terraform\modules\key-vault',
+            'terraform\modules\networking',
+            'terraform\modules\observability',
+            'terraform\modules\policy',
+            'terraform\compositions\landing-zone',
+            'terraform\compositions\ai-foundry-workspace',
+            'terraform\compositions\fabric-workspace',
+            'terraform\compositions\apim-gateway'
+          )
+
+          foreach ($relativePath in $docTargets) {
+            $fullPath = Join-Path '$(Build.SourcesDirectory)' $relativePath
+            $readmePath = Join-Path $fullPath 'README.md'
+            if (-not (Test-Path $readmePath)) {
+              throw "README missing for $relativePath"
+            }
+            & $exePath markdown table $fullPath | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "terraform-docs failed for $relativePath"
+            }
+          }

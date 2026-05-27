@@ -1,0 +1,72 @@
+{
+  "properties": {
+    "displayName": "Deny public access on core platform services",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Blocks storage, Key Vault, and Container Registry resources when public network access remains enabled.",
+    "metadata": {
+      "category": "Network",
+      "version": "1.1.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Policy effect"
+        },
+        "allowedValues": [
+          "Deny",
+          "Audit",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.Storage/storageAccounts"
+              },
+              {
+                "field": "Microsoft.Storage/storageAccounts/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.KeyVault/vaults"
+              },
+              {
+                "field": "Microsoft.KeyVault/vaults/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.ContainerRegistry/registries"
+              },
+              {
+                "field": "Microsoft.ContainerRegistry/registries/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

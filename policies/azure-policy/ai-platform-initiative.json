@@ -1,0 +1,140 @@
+{
+  "properties": {
+    "displayName": "AI Platform Security Baseline",
+    "policyType": "Custom",
+    "description": "Bundles the AI platform governance, data protection, and network isolation controls into a single initiative.",
+    "metadata": {
+      "category": "AI Platform Governance",
+      "version": "1.0.0"
+    },
+    "parameters": {
+      "enforceTagsEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      },
+      "allowedLocationsEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      },
+      "encryptionEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      },
+      "publicAccessEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      },
+      "aiIngressEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      },
+      "privateEndpointsEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      },
+      "networkIsolationEffect": {
+        "type": "String",
+        "allowedValues": ["Deny", "Audit", "Disabled"],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyDefinitions": [
+      {
+        "policyDefinitionReferenceId": "enforce-tags",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["governance"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('enforceTagsEffect')]"
+          }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "allowed-locations",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["governance"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('allowedLocationsEffect')]"
+          }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "require-encryption-at-rest",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["data-protection"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('encryptionEffect')]"
+          }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "deny-public-access",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["network-isolation"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('publicAccessEffect')]"
+          }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "deny-public-ip-ai-services",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["network-isolation"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('aiIngressEffect')]"
+          }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "require-private-endpoints",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["network-isolation"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('privateEndpointsEffect')]"
+          }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "enforce-network-isolation",
+        "policyDefinitionId": "<set-by-deployment>",
+        "groupNames": ["network-isolation"],
+        "parameters": {
+          "effect": {
+            "value": "[parameters('networkIsolationEffect')]"
+          }
+        }
+      }
+    ],
+    "policyDefinitionGroups": [
+      {
+        "name": "governance",
+        "displayName": "Governance controls",
+        "category": "Governance",
+        "description": "Tagging and regional placement controls."
+      },
+      {
+        "name": "data-protection",
+        "displayName": "Data protection controls",
+        "category": "Data Protection",
+        "description": "Encryption and data protection controls."
+      },
+      {
+        "name": "network-isolation",
+        "displayName": "Network isolation controls",
+        "category": "Network",
+        "description": "Public ingress, private endpoint, and default-deny network controls."
+      }
+    ]
+  }
+}

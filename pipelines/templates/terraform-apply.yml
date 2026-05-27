@@ -1,0 +1,206 @@
+parameters:
+- name: stageName
+  type: string
+  default: terraform_apply
+- name: displayName
+  type: string
+  default: Terraform apply
+- name: dependsOn
+  type: object
+  default: []
+- name: workingDirectory
+  type: string
+- name: environment
+  type: string
+- name: serviceConnection
+  type: string
+- name: varFile
+  type: string
+- name: planArtifactName
+  type: string
+  default: tfplan
+- name: backendResourceGroup
+  type: string
+- name: backendStorageAccount
+  type: string
+- name: backendContainer
+  type: string
+- name: backendKey
+  type: string
+- name: terraformVersion
+  type: string
+  default: 1.8.5
+- name: requireManualApproval
+  type: boolean
+  default: false
+- name: approvalNotifyUsers
+  type: string
+  default: platform-approvers@contoso.com
+- name: approvalInstructions
+  type: string
+  default: Review the Terraform plan before approving apply.
+- name: smokeTestScript
+  type: string
+  default: ''
+
+stages:
+- stage: ${{ parameters.stageName }}
+  displayName: ${{ parameters.displayName }}
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: manual_approval
+    displayName: Manual approval gate
+    condition: and(succeeded(), eq('${{ parameters.requireManualApproval }}', 'true'))
+    pool: server
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        notifyUsers: |
+          ${{ parameters.approvalNotifyUsers }}
+        instructions: ${{ parameters.approvalInstructions }}
+        onTimeout: reject
+
+  - deployment: terraform_apply
+    displayName: Terraform apply (${{ parameters.environment }})
+    dependsOn:
+    - manual_approval
+    condition: in(dependencies.manual_approval.result, 'Succeeded', 'Skipped')
+    environment: infra-${{ parameters.environment }}
+    pool:
+      vmImage: windows-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - download: current
+            artifact: ${{ parameters.planArtifactName }}
+            displayName: Download Terraform plan artifact
+
+          - template: terraform-init.yml
+            parameters:
+              workingDirectory: ${{ parameters.workingDirectory }}
+              backendServiceConnection: ${{ parameters.serviceConnection }}
+              backendResourceGroup: ${{ parameters.backendResourceGroup }}
+              backendStorageAccount: ${{ parameters.backendStorageAccount }}
+              backendContainer: ${{ parameters.backendContainer }}
+              backendKey: ${{ parameters.backendKey }}
+              terraformVersion: ${{ parameters.terraformVersion }}
+
+          - task: AzureCLI@2
+            displayName: Backup remote state before apply
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: ${{ parameters.workingDirectory }}
+              inlineScript: |
+                $applyArtifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' 'tfapply-${{ parameters.environment }}'
+                $stateBackupDir = Join-Path $applyArtifactDir 'state-backup'
+                New-Item -ItemType Directory -Path $stateBackupDir -Force | Out-Null
+
+                $blobExists = az storage blob exists --auth-mode login --account-name '${{ parameters.backendStorageAccount }}' --container-name '${{ parameters.backendContainer }}' --name '${{ parameters.backendKey }}' --query exists --output tsv 2>$null
+                if ($LASTEXITCODE -eq 0 -and $blobExists -eq 'true') {
+                  $snapshot = az storage blob snapshot --auth-mode login --account-name '${{ parameters.backendStorageAccount }}' --container-name '${{ parameters.backendContainer }}' --name '${{ parameters.backendKey }}' --output json | ConvertFrom-Json
+                  @{
+                    environment = '${{ parameters.environment }}'
+                    backendKey = '${{ parameters.backendKey }}'
+                    snapshotTime = $snapshot.snapshotTime
+                    versionId = $snapshot.versionId
+                    blobUrl = $snapshot.blobUrl
+                  } | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $stateBackupDir 'state-backup.json') -Encoding utf8
+                }
+                else {
+                  '{"message":"No prior state blob found; no backup snapshot was created."}' | Set-Content -Path (Join-Path $stateBackupDir 'state-backup.json') -Encoding utf8
+                }
+
+          - task: AzureCLI@2
+            displayName: Terraform apply
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: ${{ parameters.workingDirectory }}
+              inlineScript: |
+                $planFile = '$(Pipeline.Workspace)\${{ parameters.planArtifactName }}\${{ parameters.environment }}.tfplan'
+                terraform apply -input=false -auto-approve $planFile
+                if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+                }
+
+                $applyArtifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' 'tfapply-${{ parameters.environment }}'
+                $postApplyDir = Join-Path $applyArtifactDir 'post-apply'
+                New-Item -ItemType Directory -Path $postApplyDir -Force | Out-Null
+                terraform output -json | Set-Content -Path (Join-Path $postApplyDir 'terraform-output.json') -Encoding utf8
+                terraform state list | Set-Content -Path (Join-Path $postApplyDir 'terraform-state.txt') -Encoding utf8
+
+          - task: AzureCLI@2
+            displayName: Post-apply smoke tests
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: ${{ parameters.workingDirectory }}
+              inlineScript: |
+                $applyArtifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' 'tfapply-${{ parameters.environment }}'
+                $smokeDir = Join-Path $applyArtifactDir 'smoke-tests'
+                $varFilePath = Join-Path $env:BUILD_SOURCESDIRECTORY '${{ parameters.varFile }}'
+                New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+
+                function Get-TfvarsValue {
+                  param([string]$Name)
+                  $match = Select-String -Path $varFilePath -Pattern "^\s*$Name\s*=\s*\"([^\"]+)\"" -AllMatches
+                  if ($match -and $match.Matches.Count -gt 0) {
+                    return $match.Matches[0].Groups[1].Value
+                  }
+
+                  return $null
+                }
+
+                $customSmokeTest = @'
+                ${{ parameters.smokeTestScript }}
+                '@.Trim()
+
+                if ([string]::IsNullOrWhiteSpace($customSmokeTest)) {
+                  terraform output -json | Set-Content -Path (Join-Path $smokeDir 'default-smoke-output.json') -Encoding utf8
+                  terraform state list | Set-Content -Path (Join-Path $smokeDir 'default-smoke-state.txt') -Encoding utf8
+                }
+                else {
+                  Invoke-Expression $customSmokeTest
+                }
+
+          - task: PowerShell@2
+            displayName: Create rollback guidance
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                $applyArtifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' 'tfapply-${{ parameters.environment }}'
+                $rollbackDir = Join-Path $applyArtifactDir 'rollback'
+                $stateBackupPath = Join-Path $applyArtifactDir 'state-backup\state-backup.json'
+                New-Item -ItemType Directory -Path $rollbackDir -Force | Out-Null
+
+                $snapshotInfo = if (Test-Path $stateBackupPath) { Get-Content -Path $stateBackupPath -Raw } else { '{"message":"State backup metadata unavailable."}' }
+                @(
+                  '# Rollback guidance'
+                  ''
+                  '- Re-download the exact plan artifact that was applied before making changes.'
+                  '- If recovery requires restoring state, use the snapshot metadata in `state-backup\state-backup.json`.'
+                  '- Validate the recovered state with `terraform plan` before any follow-up apply.'
+                  '- For production incidents, create a replacement plan rather than running blind destroy/apply operations.'
+                  ''
+                  '## Snapshot metadata'
+                  ''
+                  '```json'
+                  $snapshotInfo
+                  '```'
+                ) | Set-Content -Path (Join-Path $rollbackDir 'README.md') -Encoding utf8
+
+          - publish: $(Build.ArtifactStagingDirectory)\tfapply-${{ parameters.environment }}
+            displayName: Publish apply evidence
+            artifact: tfapply-${{ parameters.environment }}

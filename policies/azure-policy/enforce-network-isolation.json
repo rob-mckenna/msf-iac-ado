@@ -1,0 +1,72 @@
+{
+  "properties": {
+    "displayName": "Enforce deny-by-default network isolation",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Requires deny-by-default network ACL posture on platform services even when private endpoints are present.",
+    "metadata": {
+      "category": "Network",
+      "version": "1.0.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Policy effect"
+        },
+        "allowedValues": [
+          "Deny",
+          "Audit",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.Storage/storageAccounts"
+              },
+              {
+                "field": "Microsoft.Storage/storageAccounts/networkAcls.defaultAction",
+                "notEquals": "Deny"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.KeyVault/vaults"
+              },
+              {
+                "field": "Microsoft.KeyVault/vaults/networkAcls.defaultAction",
+                "notEquals": "Deny"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.CognitiveServices/accounts"
+              },
+              {
+                "field": "Microsoft.CognitiveServices/accounts/networkAcls.defaultAction",
+                "notEquals": "Deny"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

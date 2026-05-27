@@ -1,0 +1,127 @@
+trigger: none
+pr: none
+
+parameters:
+- name: environment
+  type: string
+  default: sandbox
+  values:
+  - sandbox
+  - poc
+  - prod
+- name: solution_name
+  type: string
+- name: solution_path
+  type: string
+- name: bot_schema_path
+  type: string
+  default: ''
+
+variables:
+- group: vg-copilot-studio-deploy-common
+- group: vg-copilot-studio-deploy-sandbox
+- group: vg-copilot-studio-deploy-poc
+- group: vg-copilot-studio-deploy-prod
+- ${{ if eq(parameters.environment, 'sandbox') }}:
+  - name: powerPlatformConnection
+    value: $(COPILOT_STUDIO_CONNECTION_SANDBOX)
+- ${{ if eq(parameters.environment, 'poc') }}:
+  - name: powerPlatformConnection
+    value: $(COPILOT_STUDIO_CONNECTION_POC)
+- ${{ if eq(parameters.environment, 'prod') }}:
+  - name: powerPlatformConnection
+    value: $(COPILOT_STUDIO_CONNECTION_PROD)
+
+stages:
+- stage: validate_package
+  displayName: Validate Copilot Studio package (${{ parameters.environment }})
+  jobs:
+  - job: validate_assets
+    displayName: Validate solution assets
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: PowerShell@2
+      displayName: Validate solution package
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          $solutionPath = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.solution_path }}'
+          if (-not (Test-Path $solutionPath)) {
+            throw "Solution package not found: $solutionPath"
+          }
+          if (-not [string]::IsNullOrWhiteSpace('${{ parameters.bot_schema_path }}')) {
+            $botSchemaPath = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.bot_schema_path }}'
+            if (-not (Test-Path $botSchemaPath)) {
+              throw "Bot schema not found: $botSchemaPath"
+            }
+          }
+
+- stage: deploy_solution
+  displayName: Import Copilot Studio solution (${{ parameters.environment }})
+  dependsOn: validate_package
+  jobs:
+  - deployment: import_solution
+    displayName: Import managed solution
+    environment: copilot-studio-${{ parameters.environment }}
+    pool:
+      vmImage: windows-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - task: PowerPlatformToolInstaller@2
+            displayName: Install Power Platform tools
+          - task: PowerPlatformWhoAmi@2
+            displayName: Verify Power Platform connection
+            inputs:
+              authenticationType: PowerPlatformSPN
+              PowerPlatformSPN: $(powerPlatformConnection)
+          - task: PowerPlatformImportSolution@2
+            displayName: Import Copilot Studio solution
+            inputs:
+              authenticationType: PowerPlatformSPN
+              PowerPlatformSPN: $(powerPlatformConnection)
+              SolutionInputFile: $(Build.SourcesDirectory)\${{ parameters.solution_path }}
+              AsyncOperation: true
+              HoldingSolution: false
+              PublishWorkflows: true
+              MaxAsyncWaitTime: 90
+          - task: PowerPlatformPublishCustomizations@2
+            displayName: Publish solution customizations
+            inputs:
+              authenticationType: PowerPlatformSPN
+              PowerPlatformSPN: $(powerPlatformConnection)
+
+- stage: smoke_test
+  displayName: Smoke test Copilot Studio deployment (${{ parameters.environment }})
+  dependsOn: deploy_solution
+  jobs:
+  - job: verify_environment
+    displayName: Verify imported solution
+    pool:
+      vmImage: windows-latest
+    steps:
+    - task: PowerPlatformToolInstaller@2
+      displayName: Install Power Platform tools
+    - task: PowerPlatformWhoAmi@2
+      displayName: Verify deployment target
+      inputs:
+        authenticationType: PowerPlatformSPN
+        PowerPlatformSPN: $(powerPlatformConnection)
+    - task: PowerShell@2
+      displayName: Record Copilot Studio verification guidance
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          @(
+            'Copilot Studio deployment completed.'
+            'Verify the imported solution activates the expected bot, topics, and publishing profile in the target environment.'
+            "Solution: ${{ parameters.solution_name }}"
+          ) | Set-Content -Path '$(Build.ArtifactStagingDirectory)\copilot-studio-verification.txt' -Encoding utf8
+    - publish: $(Build.ArtifactStagingDirectory)\copilot-studio-verification.txt
+      artifact: copilot-studio-${{ parameters.environment }}

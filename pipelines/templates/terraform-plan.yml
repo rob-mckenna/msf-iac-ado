@@ -1,0 +1,193 @@
+parameters:
+- name: stageName
+  type: string
+  default: terraform_plan
+- name: displayName
+  type: string
+  default: Terraform plan
+- name: dependsOn
+  type: object
+  default: []
+- name: workingDirectory
+  type: string
+- name: environment
+  type: string
+- name: serviceConnection
+  type: string
+- name: varFile
+  type: string
+- name: planArtifactName
+  type: string
+  default: tfplan
+- name: backendResourceGroup
+  type: string
+- name: backendStorageAccount
+  type: string
+- name: backendContainer
+  type: string
+- name: backendKey
+  type: string
+- name: terraformVersion
+  type: string
+  default: 1.8.5
+
+stages:
+- stage: ${{ parameters.stageName }}
+  displayName: ${{ parameters.displayName }}
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: terraform_plan
+    displayName: Terraform plan (${{ parameters.environment }})
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+
+    - template: terraform-init.yml
+      parameters:
+        workingDirectory: ${{ parameters.workingDirectory }}
+        backendServiceConnection: ${{ parameters.serviceConnection }}
+        backendResourceGroup: ${{ parameters.backendResourceGroup }}
+        backendStorageAccount: ${{ parameters.backendStorageAccount }}
+        backendContainer: ${{ parameters.backendContainer }}
+        backendKey: ${{ parameters.backendKey }}
+        terraformVersion: ${{ parameters.terraformVersion }}
+
+    - task: AzureCLI@2
+      displayName: Terraform plan
+      inputs:
+        azureSubscription: ${{ parameters.serviceConnection }}
+        scriptType: pscore
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        workingDirectory: ${{ parameters.workingDirectory }}
+        inlineScript: |
+          $artifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' '${{ parameters.planArtifactName }}'
+          $planFile = Join-Path $artifactDir '${{ parameters.environment }}.tfplan'
+          $planTextFile = Join-Path $artifactDir '${{ parameters.environment }}.plan.txt'
+          $planJsonFile = Join-Path $artifactDir '${{ parameters.environment }}.plan.json'
+          $summaryFile = Join-Path $artifactDir '${{ parameters.environment }}.summary.md'
+          $checksumFile = Join-Path $artifactDir '${{ parameters.environment }}.sha256'
+
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          terraform plan -input=false -lock-timeout=5m -out=$planFile -var-file='${{ parameters.varFile }}' -no-color
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          terraform show -no-color $planFile | Set-Content -Path $planTextFile -Encoding utf8
+          terraform show -json $planFile | Set-Content -Path $planJsonFile -Encoding utf8
+
+          $planText = Get-Content -Path $planTextFile -Raw
+          $summaryLine = 'Terraform completed without a summary line.'
+          if ($planText -match 'Plan:\s+(\d+)\s+to add,\s+(\d+)\s+to change,\s+(\d+)\s+to destroy\.') {
+            $summaryLine = "Plan: $($matches[1]) to add, $($matches[2]) to change, $($matches[3]) to destroy."
+          }
+          elseif ($planText -match 'No changes\.') {
+            $summaryLine = 'No infrastructure changes detected.'
+          }
+
+          @(
+            '## Terraform plan summary'
+            ''
+            '- Composition: `${{ parameters.workingDirectory }}`'
+            '- Environment: `${{ parameters.environment }}`'
+            "- Result: $summaryLine"
+            '- Artifacts: binary plan, text plan, JSON plan, and checksums.'
+          ) | Set-Content -Path $summaryFile -Encoding utf8
+
+          Get-ChildItem -Path $artifactDir -File |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { '{0} *{1}' -f $_.Hash, [System.IO.Path]::GetFileName($_.Path) } |
+            Set-Content -Path $checksumFile -Encoding utf8
+
+    - task: PowerShell@2
+      displayName: Estimate cost impact
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          $artifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' '${{ parameters.planArtifactName }}'
+          $planJsonFile = Join-Path $artifactDir '${{ parameters.environment }}.plan.json'
+          $costFile = Join-Path $artifactDir '${{ parameters.environment }}.cost.md'
+          $toolDir = Join-Path '$(Agent.TempDirectory)' 'infracost'
+          $infracostExe = Join-Path $toolDir 'infracost.exe'
+
+          if ([string]::IsNullOrWhiteSpace($env:INFRACOST_API_KEY)) {
+            @(
+              '## Cost estimation'
+              ''
+              '- Infracost skipped because `INFRACOST_API_KEY` is not configured.'
+              '- Treat this as a manual FinOps review gate before approving apply in higher environments.'
+            ) | Set-Content -Path $costFile -Encoding utf8
+            exit 0
+          }
+
+          try {
+            New-Item -ItemType Directory -Path $toolDir -Force | Out-Null
+            if (-not (Test-Path $infracostExe)) {
+              $zipPath = Join-Path $toolDir 'infracost.zip'
+              Invoke-WebRequest -Uri 'https://github.com/infracost/infracost/releases/download/v0.10.39/infracost-windows-amd64.zip' -OutFile $zipPath
+              Expand-Archive -Path $zipPath -DestinationPath $toolDir -Force
+            }
+
+            & $infracostExe breakdown --path $planJsonFile --format markdown --out-file $costFile
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Infracost breakdown failed.'
+            }
+          }
+          catch {
+            @(
+              '## Cost estimation'
+              ''
+              "- Infracost execution failed: $($_.Exception.Message)"
+              '- Continue only after completing a manual cost review.'
+            ) | Set-Content -Path $costFile -Encoding utf8
+          }
+      env:
+        INFRACOST_API_KEY: $(INFRACOST_API_KEY)
+
+    - task: PowerShell@2
+      displayName: Post plan summary to pull request
+      condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          if ([string]::IsNullOrWhiteSpace($env:SYSTEM_ACCESSTOKEN)) {
+            throw 'SYSTEM_ACCESSTOKEN must be enabled to publish the plan summary back to the pull request.'
+          }
+
+          $artifactDir = Join-Path '$(Build.ArtifactStagingDirectory)' '${{ parameters.planArtifactName }}'
+          $summaryFile = Join-Path $artifactDir '${{ parameters.environment }}.summary.md'
+          $costFile = Join-Path $artifactDir '${{ parameters.environment }}.cost.md'
+          $body = @(
+            "### Terraform plan (${{ parameters.environment }})"
+            ''
+            (Get-Content -Path $summaryFile -Raw)
+            ''
+            (Get-Content -Path $costFile -Raw)
+            ''
+            'Artifacts include the binary plan, JSON export, human-readable plan, and SHA256 checksums.'
+          ) -join "`n"
+
+          $threadUri = '$(System.CollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.ID)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=7.1-preview.1'
+          $payload = @{
+            comments = @(
+              @{
+                parentCommentId = 0
+                content = $body
+                commentType = 'text'
+              }
+            )
+            status = 'active'
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod -Method Post -Uri $threadUri -Headers @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" } -ContentType 'application/json' -Body $payload | Out-Null
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+    - publish: $(Build.ArtifactStagingDirectory)\${{ parameters.planArtifactName }}
+      displayName: Publish Terraform plan artifact bundle
+      artifact: ${{ parameters.planArtifactName }}

@@ -1,0 +1,97 @@
+parameters:
+- name: workingDirectory
+  type: string
+- name: backendServiceConnection
+  type: string
+- name: backendResourceGroup
+  type: string
+- name: backendStorageAccount
+  type: string
+- name: backendContainer
+  type: string
+- name: backendKey
+  type: string
+- name: terraformVersion
+  type: string
+  default: 1.8.5
+- name: providerCacheDir
+  type: string
+  default: $(Pipeline.Workspace)\terraform-provider-cache
+- name: lockTimeout
+  type: string
+  default: 5m
+
+steps:
+- task: TerraformInstaller@1
+  displayName: Install Terraform ${{ parameters.terraformVersion }}
+  inputs:
+    terraformVersion: ${{ parameters.terraformVersion }}
+
+- task: Cache@2
+  displayName: Restore Terraform provider cache
+  inputs:
+    key: 'terraform | "$(Agent.OS)" | ${{ parameters.workingDirectory }} | ${{ parameters.terraformVersion }} | $(Build.SourcesDirectory)\${{ parameters.workingDirectory }}\.terraform.lock.hcl'
+    restoreKeys: |
+      terraform | "$(Agent.OS)" | ${{ parameters.workingDirectory }} | ${{ parameters.terraformVersion }}
+      terraform | "$(Agent.OS)"
+    path: ${{ parameters.providerCacheDir }}
+
+- task: AzureCLI@2
+  displayName: Terraform init
+  inputs:
+    azureSubscription: ${{ parameters.backendServiceConnection }}
+    scriptType: pscore
+    scriptLocation: inlineScript
+    addSpnToEnvironment: true
+    workingDirectory: ${{ parameters.workingDirectory }}
+    inlineScript: |
+      $lockFilePath = Join-Path $env:BUILD_SOURCESDIRECTORY '${{ parameters.workingDirectory }}\.terraform.lock.hcl'
+      if (-not (Test-Path $lockFilePath)) {
+        throw "Provider lock file missing at $lockFilePath. Generate it with 'terraform init -backend=false' and commit it before running the pipeline."
+      }
+
+      $installedTerraformVersion = (terraform version -json | ConvertFrom-Json).terraform_version
+      if ($installedTerraformVersion -ne '${{ parameters.terraformVersion }}') {
+        throw "Expected Terraform version ${{ parameters.terraformVersion }} but found $installedTerraformVersion."
+      }
+
+      $cacheDir = '${{ parameters.providerCacheDir }}'
+      New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+      $env:TF_PLUGIN_CACHE_DIR = $cacheDir
+      Write-Host "Using provider cache directory: $env:TF_PLUGIN_CACHE_DIR"
+
+      az account show --output table
+
+      $blobExists = az storage blob exists `
+        --auth-mode login `
+        --account-name '${{ parameters.backendStorageAccount }}' `
+        --container-name '${{ parameters.backendContainer }}' `
+        --name '${{ parameters.backendKey }}' `
+        --query exists `
+        --output tsv 2>$null
+
+      if ($LASTEXITCODE -eq 0 -and $blobExists -eq 'true') {
+        $leaseState = az storage blob show `
+          --auth-mode login `
+          --account-name '${{ parameters.backendStorageAccount }}' `
+          --container-name '${{ parameters.backendContainer }}' `
+          --name '${{ parameters.backendKey }}' `
+          --query properties.lease.state `
+          --output tsv
+
+        if ($leaseState -eq 'leased') {
+          throw "Remote state '${{ parameters.backendKey }}' is currently leased. Clear the stale lock before rerunning this pipeline."
+        }
+
+        Write-Host "Remote state lease state: $leaseState"
+      }
+      else {
+        Write-Host "No existing remote state blob found for '${{ parameters.backendKey }}'. Continuing with init."
+      }
+
+      terraform --version
+      terraform init -input=false -reconfigure -lock-timeout=${{ parameters.lockTimeout }} -lockfile=readonly `
+        -backend-config="resource_group_name=${{ parameters.backendResourceGroup }}" `
+        -backend-config="storage_account_name=${{ parameters.backendStorageAccount }}" `
+        -backend-config="container_name=${{ parameters.backendContainer }}" `
+        -backend-config="key=${{ parameters.backendKey }}"

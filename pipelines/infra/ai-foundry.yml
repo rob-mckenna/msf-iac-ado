@@ -1,0 +1,219 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\templates\**
+    - pipelines\infra\ai-foundry.yml
+    - terraform\compositions\ai-foundry-workspace\**
+    - terraform\environments\**
+    - terraform\modules\**
+
+pr:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - pipelines\templates\**
+    - pipelines\infra\ai-foundry.yml
+    - terraform\compositions\ai-foundry-workspace\**
+    - terraform\environments\**
+    - terraform\modules\**
+
+variables:
+- group: vg-ai-foundry-common
+- group: vg-ai-foundry-sandbox
+- group: vg-ai-foundry-poc
+- group: vg-ai-foundry-prod
+- group: vg-tf-backend-sandbox
+- group: vg-tf-backend-poc
+- group: vg-tf-backend-prod
+- name: workingDirectory
+  value: terraform\compositions\ai-foundry-workspace
+- name: landingZoneDependencyCheck
+  value: |
+    $landingZoneStateStorageAccount = Get-TfvarsValue 'landing_zone_state_storage_account_name'
+    $landingZoneStateContainer = Get-TfvarsValue 'landing_zone_state_container_name'
+    $landingZoneStateKey = Get-TfvarsValue 'landing_zone_state_key'
+    $stateExists = az storage blob exists --auth-mode login --account-name $landingZoneStateStorageAccount --container-name $landingZoneStateContainer --name $landingZoneStateKey --query exists --output tsv
+    if ($stateExists -ne 'true') {
+      throw "Landing zone dependency is missing. Deploy landing-zone first so remote state $landingZoneStateKey exists."
+    }
+
+stages:
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_sandbox
+    displayName: Validate (sandbox)
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: ai-foundry-workspace.sandbox.tfstate
+    preValidateScript: $(landingZoneDependencyCheck)
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_sandbox
+    displayName: Plan (sandbox)
+    dependsOn:
+    - validate_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    planArtifactName: tfplan-ai-foundry-sandbox
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: ai-foundry-workspace.sandbox.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_sandbox
+    displayName: Apply (sandbox)
+    dependsOn:
+    - plan_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: sandbox
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_SANDBOX)
+    varFile: terraform\environments\sandbox\sandbox.tfvars
+    planArtifactName: tfplan-ai-foundry-sandbox
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_SANDBOX)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_SANDBOX)
+    backendContainer: $(TF_BACKEND_CONTAINER_SANDBOX)
+    backendKey: ai-foundry-workspace.sandbox.tfstate
+    smokeTestScript: |
+      az extension add --name ml --yes | Out-Null
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      $workspaceName = Get-TfvarsValue 'workspace_name'
+      if (-not $resourceGroupName -or -not $workspaceName) {
+        throw 'resource_group_name or workspace_name was not found in the tfvars file.'
+      }
+      az ml workspace show --name $workspaceName --resource-group $resourceGroupName --output table | Out-Host
+      'AI Foundry sandbox smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'ai-foundry-smoke.txt') -Encoding utf8
+
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_poc
+    displayName: Validate (poc)
+    dependsOn:
+    - apply_sandbox
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: ai-foundry-workspace.poc.tfstate
+    preValidateScript: $(landingZoneDependencyCheck)
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_poc
+    displayName: Plan (poc)
+    dependsOn:
+    - validate_poc
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    planArtifactName: tfplan-ai-foundry-poc
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: ai-foundry-workspace.poc.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_poc
+    displayName: Apply (poc)
+    dependsOn:
+    - plan_poc
+    workingDirectory: $(workingDirectory)
+    environment: poc
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_POC)
+    varFile: terraform\environments\poc\poc.tfvars
+    planArtifactName: tfplan-ai-foundry-poc
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_POC)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_POC)
+    backendContainer: $(TF_BACKEND_CONTAINER_POC)
+    backendKey: ai-foundry-workspace.poc.tfstate
+    requireManualApproval: true
+    approvalNotifyUsers: $(AI_FOUNDRY_APPROVAL_NOTIFY_USERS_POC)
+    approvalInstructions: Confirm landing-zone is already promoted and review AI Foundry poc plan output before apply.
+    smokeTestScript: |
+      az extension add --name ml --yes | Out-Null
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      $workspaceName = Get-TfvarsValue 'workspace_name'
+      if (-not $resourceGroupName -or -not $workspaceName) {
+        throw 'resource_group_name or workspace_name was not found in the tfvars file.'
+      }
+      az ml workspace show --name $workspaceName --resource-group $resourceGroupName --output table | Out-Host
+      'AI Foundry PoC smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'ai-foundry-smoke.txt') -Encoding utf8
+
+- template: ../templates/terraform-validate.yml
+  parameters:
+    stageName: validate_prod
+    displayName: Validate (prod)
+    dependsOn:
+    - apply_poc
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: ai-foundry-workspace.prod.tfstate
+    preValidateScript: $(landingZoneDependencyCheck)
+
+- template: ../templates/terraform-plan.yml
+  parameters:
+    stageName: plan_prod
+    displayName: Plan (prod)
+    dependsOn:
+    - validate_prod
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    planArtifactName: tfplan-ai-foundry-prod
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: ai-foundry-workspace.prod.tfstate
+
+- template: ../templates/terraform-apply.yml
+  parameters:
+    stageName: apply_prod
+    displayName: Apply (prod)
+    dependsOn:
+    - plan_prod
+    workingDirectory: $(workingDirectory)
+    environment: prod
+    serviceConnection: $(AI_FOUNDRY_SERVICE_CONNECTION_PROD)
+    varFile: terraform\environments\prod\prod.tfvars
+    planArtifactName: tfplan-ai-foundry-prod
+    backendResourceGroup: $(TF_BACKEND_RESOURCE_GROUP_PROD)
+    backendStorageAccount: $(TF_BACKEND_STORAGE_ACCOUNT_PROD)
+    backendContainer: $(TF_BACKEND_CONTAINER_PROD)
+    backendKey: ai-foundry-workspace.prod.tfstate
+    requireManualApproval: true
+    approvalNotifyUsers: $(AI_FOUNDRY_APPROVAL_NOTIFY_USERS_PROD)
+    approvalInstructions: Confirm the landing-zone production state exists, then review AI Foundry prod plan and rollback evidence before apply.
+    smokeTestScript: |
+      az extension add --name ml --yes | Out-Null
+      $resourceGroupName = Get-TfvarsValue 'resource_group_name'
+      $workspaceName = Get-TfvarsValue 'workspace_name'
+      if (-not $resourceGroupName -or -not $workspaceName) {
+        throw 'resource_group_name or workspace_name was not found in the tfvars file.'
+      }
+      az ml workspace show --name $workspaceName --resource-group $resourceGroupName --output table | Out-Host
+      'AI Foundry production smoke test completed.' | Set-Content -Path (Join-Path $smokeDir 'ai-foundry-smoke.txt') -Encoding utf8

@@ -1,0 +1,165 @@
+trigger: none
+pr: none
+
+parameters:
+- name: project
+  type: string
+- name: environment
+  type: string
+  default: sandbox
+  values:
+  - sandbox
+  - poc
+  - prod
+- name: flow_config_path
+  type: string
+- name: connections_path
+  type: string
+  default: ''
+- name: endpoint_name
+  type: string
+- name: deployment_name
+  type: string
+  default: blue
+- name: test_data_path
+  type: string
+  default: ''
+
+variables:
+- group: vg-ai-foundry-deploy-common
+- group: vg-ai-foundry-deploy-sandbox
+- group: vg-ai-foundry-deploy-poc
+- group: vg-ai-foundry-deploy-prod
+- ${{ if eq(parameters.environment, 'sandbox') }}:
+  - name: serviceConnection
+    value: $(AI_DEPLOY_SERVICE_CONNECTION_SANDBOX)
+  - name: aiFoundryResourceGroup
+    value: $(AI_FOUNDRY_RESOURCE_GROUP_SANDBOX)
+- ${{ if eq(parameters.environment, 'poc') }}:
+  - name: serviceConnection
+    value: $(AI_DEPLOY_SERVICE_CONNECTION_POC)
+  - name: aiFoundryResourceGroup
+    value: $(AI_FOUNDRY_RESOURCE_GROUP_POC)
+- ${{ if eq(parameters.environment, 'prod') }}:
+  - name: serviceConnection
+    value: $(AI_DEPLOY_SERVICE_CONNECTION_PROD)
+  - name: aiFoundryResourceGroup
+    value: $(AI_FOUNDRY_RESOURCE_GROUP_PROD)
+
+stages:
+- stage: validate_package
+  displayName: Validate flow package (${{ parameters.environment }})
+  jobs:
+  - job: validate_inputs
+    displayName: Validate flow assets
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: PowerShell@2
+      displayName: Validate flow files
+      inputs:
+        pwsh: true
+        targetType: inline
+        script: |
+          $requiredPath = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.flow_config_path }}'
+          if (-not (Test-Path $requiredPath)) {
+            throw "Flow config not found: $requiredPath"
+          }
+          if (-not [string]::IsNullOrWhiteSpace('${{ parameters.connections_path }}')) {
+            $connectionsPath = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.connections_path }}'
+            if (-not (Test-Path $connectionsPath)) {
+              throw "Connections path not found: $connectionsPath"
+            }
+          }
+
+- stage: deploy_flow
+  displayName: Deploy Prompt Flow (${{ parameters.environment }})
+  dependsOn: validate_package
+  jobs:
+  - deployment: deploy_flow
+    displayName: Create connections and deploy flow
+    environment: promptflow-${{ parameters.environment }}
+    pool:
+      vmImage: windows-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - task: AzureCLI@2
+            displayName: Deploy Prompt Flow
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              inlineScript: |
+                az config set extension.use_dynamic_install=yes_without_prompt
+                az extension add --name ml --yes
+
+                $workspaceName = '${{ parameters.project }}'
+                $resourceGroupName = '$(aiFoundryResourceGroup)'
+                $flowConfigPath = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.flow_config_path }}'
+
+                az ml workspace show --name $workspaceName --resource-group $resourceGroupName --output table
+
+                if (-not [string]::IsNullOrWhiteSpace('${{ parameters.connections_path }}')) {
+                  $connectionsPath = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.connections_path }}'
+                  Get-ChildItem -Path $connectionsPath -File | ForEach-Object {
+                    $connectionFile = $_.FullName
+                    $connectionName = $_.BaseName
+                    az ml connection show --name $connectionName --resource-group $resourceGroupName --workspace-name $workspaceName --only-show-errors 1>$null 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                      az ml connection update --file $connectionFile --resource-group $resourceGroupName --workspace-name $workspaceName
+                    }
+                    else {
+                      az ml connection create --file $connectionFile --resource-group $resourceGroupName --workspace-name $workspaceName
+                    }
+                  }
+                }
+
+                az ml online-endpoint show --name '${{ parameters.endpoint_name }}' --resource-group $resourceGroupName --workspace-name $workspaceName --only-show-errors 1>$null 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                  az ml online-endpoint create --name '${{ parameters.endpoint_name }}' --auth-mode key --resource-group $resourceGroupName --workspace-name $workspaceName
+                }
+
+                az ml online-deployment create `
+                  --name '${{ parameters.deployment_name }}' `
+                  --endpoint-name '${{ parameters.endpoint_name }}' `
+                  --file $flowConfigPath `
+                  --resource-group $resourceGroupName `
+                  --workspace-name $workspaceName `
+                  --set tags.environment='${{ parameters.environment }}' tags.artifactType='promptflow'
+
+                az ml online-endpoint update --name '${{ parameters.endpoint_name }}' --resource-group $resourceGroupName --workspace-name $workspaceName --traffic '${{ parameters.deployment_name }}=100'
+
+- stage: test_flow
+  displayName: Test Prompt Flow (${{ parameters.environment }})
+  dependsOn: deploy_flow
+  jobs:
+  - job: invoke_flow
+    displayName: Run flow smoke test
+    pool:
+      vmImage: windows-latest
+    steps:
+    - task: AzureCLI@2
+      displayName: Invoke deployed flow
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: pscore
+        scriptLocation: inlineScript
+        addSpnToEnvironment: true
+        inlineScript: |
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az extension add --name ml --yes
+
+          $workspaceName = '${{ parameters.project }}'
+          $resourceGroupName = '$(aiFoundryResourceGroup)'
+          az ml online-endpoint show --name '${{ parameters.endpoint_name }}' --resource-group $resourceGroupName --workspace-name $workspaceName --output table
+          az ml online-deployment show --name '${{ parameters.deployment_name }}' --endpoint-name '${{ parameters.endpoint_name }}' --resource-group $resourceGroupName --workspace-name $workspaceName --output table
+
+          if (-not [string]::IsNullOrWhiteSpace('${{ parameters.test_data_path }}')) {
+            $requestFile = Join-Path '$(Build.SourcesDirectory)' '${{ parameters.test_data_path }}'
+            az ml online-endpoint invoke --name '${{ parameters.endpoint_name }}' --deployment-name '${{ parameters.deployment_name }}' --resource-group $resourceGroupName --workspace-name $workspaceName --request-file $requestFile | Out-Host
+          }

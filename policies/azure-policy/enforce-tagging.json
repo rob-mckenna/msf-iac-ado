@@ -1,0 +1,68 @@
+{
+  "properties": {
+    "displayName": "Enforce required platform tags",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Requires the platform tagging baseline on all deployable resources.",
+    "metadata": {
+      "category": "Tags",
+      "version": "1.1.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Policy effect"
+        },
+        "allowedValues": [
+          "Deny",
+          "Audit",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "notEquals": "Microsoft.Resources/subscriptions/resourceGroups"
+          },
+          {
+            "anyOf": [
+              {
+                "field": "tags['environment']",
+                "exists": "false"
+              },
+              {
+                "field": "tags['project']",
+                "exists": "false"
+              },
+              {
+                "field": "tags['owner']",
+                "exists": "false"
+              },
+              {
+                "field": "tags['cost-center']",
+                "exists": "false"
+              },
+              {
+                "field": "tags['managed-by']",
+                "exists": "false"
+              },
+              {
+                "field": "tags['created-date']",
+                "exists": "false"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

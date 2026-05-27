@@ -1,0 +1,48 @@
+# Squad
+.squad/orchestration-log/
+.squad/log/
+.squad/decisions/inbox/
+.squad/sessions/
+.squad-workstream
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+*.tfvars.lock
+.terraform.lock.hcl
+
+# Azure
+.azure/
+*.publishsettings
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS
+desktop.ini
+$RECYCLE.BIN/
+
+# Secrets — never commit
+*.pem
+*.key
+*.pfx
+*.p12
+*.env
+.env.*
+secrets.json

@@ -27,8 +27,13 @@ When building Terraform IaC for a multi-component Azure platform, use a two-tier
 
 ### Environments (`terraform/environments/`)
 - One tfvars file per environment per composition
-- Environment codes: sbx (sandbox), poc, prd (prod)
+- When a shared tfvars file is reused across multiple compositions, use composition-specific variable names for workload-scoped values (for example `ai_foundry_resource_group_name`, `fabric_workspace_name`) to avoid cross-composition collisions.
 - Same composition, different variables = different environment
+
+### Landing Zone Hardening
+- Model hub-spoke foundations with explicit hub subnet prefixes for Azure Firewall, GatewaySubnet, and DNS Private Resolver.
+- Push common outputs as maps (`hub_subnet_ids`, `spoke_subnet_ids`, `private_dns_zone_ids`) so downstream compositions can consume the platform without hardcoded IDs.
+- Keep shared module provider constraints aligned with composition roots to avoid provider-major-version drift during validation.
 
 ## Examples
 ```hcl

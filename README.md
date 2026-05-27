@@ -22,53 +22,69 @@ This reference architecture is designed for enterprises that need:
 ## Architecture Diagram
 
 ```mermaid
-flowchart TB
-    subgraph Identity[Identity & Governance]
+flowchart LR
+    %% Left-to-right layering keeps flow readable and minimizes line crossings.
+
+    subgraph Control[Control Plane]
+        direction TB
         Entra[Microsoft Entra ID]
         AzDO[Azure DevOps\nCI/CD Pipelines]
     end
 
-    subgraph Hub[Hub VNet]
+    subgraph Network[Connectivity & Security]
+        direction TB
+        Hub[Hub VNet]
         Firewall[Azure Firewall]
         DNS[DNS Private Resolver]
-        Obs[Observability Stack\nLog Analytics\nApplication Insights\nAzure Monitor]
+        Hub --> Firewall
+        Hub --> DNS
     end
 
-    subgraph Shared[Shared Platform Services]
+    subgraph Platform[Shared Platform Services]
+        direction TB
         APIM[Azure API Management\nAI Gateway]
         Safety[Azure AI Content Safety]
         MCP[MCP Server Catalog]
         Fabric[Microsoft Fabric Workspace]
     end
 
-    subgraph Spokes[Spoke VNets for AI Workloads]
-        subgraph WorkloadA[AI Workload Spoke]
+    subgraph Workloads[AI Workload Spokes]
+        direction TB
+        subgraph SpokeA[AI Workload Spoke]
+            direction TB
             Foundry[Azure AI Foundry\nNetwork-Isolated]
             PrivateEP[Private Endpoints]
+            Foundry --> PrivateEP
         end
-        subgraph WorkloadB[Additional Spokes]
+        subgraph SpokeB[Additional Spokes]
+            direction TB
             Apps[Agents, APIs, and Workload Services]
         end
     end
 
+    subgraph Ops[Operations]
+        direction TB
+        Obs[Observability Stack\nLog Analytics\nApplication Insights\nAzure Monitor]
+    end
+
     Entra --> APIM
     Entra --> Foundry
+
     AzDO --> APIM
     AzDO --> Foundry
     AzDO --> Apps
 
     Firewall --> APIM
     Firewall --> Foundry
-    DNS --> PrivateEP
     DNS --> APIM
+    DNS --> PrivateEP
 
     APIM --> Foundry
-    APIM --> MCP
     APIM --> Safety
+    APIM --> MCP
     Apps --> APIM
     Fabric --> Foundry
     Fabric --> Apps
-    Foundry --> PrivateEP
 
     APIM --> Obs
     Foundry --> Obs
